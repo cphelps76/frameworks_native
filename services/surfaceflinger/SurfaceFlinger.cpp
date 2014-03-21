@@ -2517,7 +2517,7 @@ void SurfaceFlinger::unblankSignalRefresh() {
         }
     };
     sp<MessageBase> msg = new MessageUnblankSignalRefresh(this);
-    postMessageAsync(msg, ms2ns(1500));  // use async message
+    postMessageAsync(msg, ms2ns(500));  // use async message
     //ALOGI("unblankSignalRefresh postmsg");
 }
 
