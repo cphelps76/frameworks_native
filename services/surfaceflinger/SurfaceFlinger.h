@@ -64,6 +64,8 @@ class DisplayEventConnection;
 class EventThread;
 class IGraphicBufferAlloc;
 class Layer;
+//class LayerBase;
+class LayerBaseClient;
 class LayerDim;
 class Surface;
 class RenderEngine;
@@ -108,6 +110,18 @@ public:
     // force full composition on all displays
     void repaintEverything();
 
+    /*
+    // renders content on given display to a texture. thread-safe version.
+    status_t renderScreenToTexture(uint32_t layerStack, GLuint* textureName,
+        GLfloat* uOut, GLfloat* vOut);
+
+    // renders content on given display to a texture, w/o acquiring main lock
+    status_t renderScreenToTextureLocked(uint32_t layerStack, GLuint* textureName,
+        GLfloat* uOut, GLfloat* vOut);
+    status_t renderScreenToTextureLocked2(uint32_t layerStack,GLuint* textureName,
+        GLfloat* uOut, GLfloat* vOut);
+        */
+
     // returns the default Display
     sp<const DisplayDevice> getDefaultDisplayDevice() const {
         return getDisplayDevice(mBuiltinDisplays[DisplayDevice::DISPLAY_PRIMARY]);
@@ -137,6 +151,8 @@ private:
     friend class Client;
     friend class DisplayEventConnection;
     friend class Layer;
+	friend class LayerBase;
+    friend class LayerBaseClient;
     friend class SurfaceTextureLayer;
 
     // This value is specified in number of frames.  Log frame stats at most
@@ -176,6 +192,8 @@ private:
     struct State {
         LayerVector layersSortedByZ;
         DefaultKeyedVector< wp<IBinder>, DisplayDeviceState> displays;
+        uint8_t         orientation;
+        uint8_t         orientationFlags;
     };
 
     /* ------------------------------------------------------------------------
@@ -330,6 +348,8 @@ private:
     // called when starting, or restarting after system_server death
     void initializeDisplays();
 
+    void unblankSignalRefresh();
+
     // Create an IBinder for a builtin display and add it to current state
     void createBuiltinDisplayLocked(DisplayDevice::DisplayType type);
 
@@ -375,6 +395,12 @@ private:
 
     void postFramebuffer();
     void drawWormhole(const sp<const DisplayDevice>& hw, const Region& region) const;
+    void drawVideoHole(int x,int y,int w,int h);
+    //void doTranslateOffset(int offsetx,int offsety,bool flag);
+    //void doTranslateOffsetInRender(int offsetx,int offsety,bool flag);
+    status_t preProcessWithFrameBuffer(const Region&,float scale_x,float scale_y);
+    status_t changeBufferTo3DFormat(int type);
+    status_t changeBufferTo3DFormat(float scalex,float scaley,int type);
 
     /* ------------------------------------------------------------------------
      * Display management
@@ -448,6 +474,10 @@ private:
     DefaultKeyedVector< wp<IBinder>, sp<DisplayDevice> > mDisplays;
 
     // don't use a lock for these, we don't care
+    nsecs_t mDebugFpsStartTime;
+    nsecs_t mDebugFpsLastTime;
+    long long mDebugFpsCount;
+    int mDebugFps;
     int mDebugRegion;
     int mDebugDDMS;
     int mDebugDisableHWC;
@@ -457,6 +487,7 @@ private:
     volatile nsecs_t mDebugInTransaction;
     nsecs_t mLastTransactionTime;
     bool mBootFinished;
+    bool mNeed2XScale;
 
     // these are thread safe
     mutable MessageQueue mEventQueue;

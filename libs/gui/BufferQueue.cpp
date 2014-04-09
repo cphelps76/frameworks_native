@@ -421,7 +421,8 @@ status_t BufferQueue::dequeueBuffer(int *outBuf, sp<Fence>* outFence, bool async
         eglFence = mSlots[buf].mEglFence;
         *outFence = mSlots[buf].mFence;
         mSlots[buf].mEglFence = EGL_NO_SYNC_KHR;
-        mSlots[buf].mFence = Fence::NO_FENCE;
+        mSlots[buf].mFence.clear();
+        //mDequeueUsage = usage;
     }  // end lock scope
 
     if (returnFlags & IGraphicBufferProducer::BUFFER_NEEDS_REALLOCATION) {

@@ -135,6 +135,7 @@ typedef enum OMX_INDEXTYPE {
     OMX_IndexParamAudioEvrc,                /**< reference: OMX_AUDIO_PARAM_EVRCTYPE */
     OMX_IndexParamAudioSmv,                 /**< reference: OMX_AUDIO_PARAM_SMVTYPE */
     OMX_IndexParamAudioVorbis,              /**< reference: OMX_AUDIO_PARAM_VORBISTYPE */
+    OMX_IndexParamAudioAsf,                 /**< reference: OMX_AUDIO_PARAM_WMASTDTYPE */
     OMX_IndexParamAudioFlac,                /**< reference: OMX_AUDIO_PARAM_FLACTYPE */
 
     OMX_IndexConfigAudioMidiImmediateEvent, /**< reference: OMX_AUDIO_CONFIG_MIDIIMMEDIATEEVENTTYPE */
@@ -157,6 +158,9 @@ typedef enum OMX_INDEXTYPE {
     OMX_IndexConfigAudioEqualizer,          /**< reference: OMX_AUDIO_CONFIG_EQUALIZERTYPE */
     OMX_IndexConfigAudioReverberation,      /**< reference: OMX_AUDIO_CONFIG_REVERBERATIONTYPE */
     OMX_IndexConfigAudioChannelVolume,      /**< reference: OMX_AUDIO_CONFIG_CHANNELVOLUMETYPE */
+    OMX_IndexParamAudioAlac,
+    OMX_IndexParamAudioDtshd,
+    OMX_IndexParamAudioApe,
 
     /* Image specific parameters and configurations */
     OMX_IndexImageStartUnused = 0x05000000,

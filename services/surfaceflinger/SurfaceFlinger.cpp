@@ -122,10 +122,28 @@ static const int64_t sfVsyncPhaseOffsetNs = SF_VSYNC_EVENT_PHASE_OFFSET_NS;
 
 // ---------------------------------------------------------------------------
 
+#define FB0_BLANK_PATH       "/sys/class/graphics/fb0/blank"
+#define FB1_BLANK_PATH       "/sys/class/graphics/fb1/blank"
+#define DISABLE_VIDEO_PATH       "/sys/class/video/disable_video"
+
+static int need_unblank_fb0=0;
+static int request2XScaleChanged(void);
+int amsysfs_set_sysfs_str(const char *path, const char *val);
 const String16 sHardwareTest("android.permission.HARDWARE_TEST");
 const String16 sAccessSurfaceFlinger("android.permission.ACCESS_SURFACE_FLINGER");
 const String16 sReadFramebuffer("android.permission.READ_FRAME_BUFFER");
 const String16 sDump("android.permission.DUMP");
+static int windowWidth=1024;
+static int windowHeight =600;
+bool windowSize = false;
+uint8_t lastOrientation =0;
+
+
+#ifdef DISABLE_LASTROTATION 
+	nsecs_t BootFinishedTime=0; 
+	nsecs_t OrigBootFinishedTime=0; 
+	bool isFirstTime = true;
+#endif
 
 // ---------------------------------------------------------------------------
 
@@ -141,6 +159,7 @@ SurfaceFlinger::SurfaceFlinger()
         mVisibleRegionsDirty(false),
         mHwWorkListDirty(false),
         mAnimCompositionPending(false),
+        mDebugFps(0),
         mDebugRegion(0),
         mDebugDDMS(0),
         mDebugDisableHWC(0),
@@ -159,6 +178,8 @@ SurfaceFlinger::SurfaceFlinger()
     // debugging stuff...
     char value[PROPERTY_VALUE_MAX];
 
+    //amsysfs_set_sysfs_str(FB0_BLANK_PATH,"0");
+
     property_get("ro.bq.gpu_to_cpu_unsupported", value, "0");
     mGpuToCpuSupported = !atoi(value);
 
@@ -173,6 +194,7 @@ SurfaceFlinger::SurfaceFlinger()
             mDebugDDMS = 0;
         }
     }
+
     ALOGI_IF(mDebugRegion, "showupdates enabled");
     ALOGI_IF(mDebugDDMS, "DDMS debugging enabled");
 }
@@ -196,6 +218,9 @@ void SurfaceFlinger::binderDied(const wp<IBinder>& who)
     // restore initial conditions (default device unblank, etc)
     initializeDisplays();
 
+#ifdef DISABLE_LASTROTATION 
+       isFirstTime = true;
+#endif
     // restart the boot-animation
     startBootAnim();
 }
@@ -285,6 +310,9 @@ sp<IGraphicBufferAlloc> SurfaceFlinger::createGraphicBufferAlloc()
 void SurfaceFlinger::bootFinished()
 {
     const nsecs_t now = systemTime();
+	#ifdef DISABLE_LASTROTATION 
+		OrigBootFinishedTime=now;
+	#endif
     const nsecs_t duration = now - mBootTime;
     ALOGI("Boot is finished (%ld ms)", long(ns2ms(duration)) );
     mBootFinished = true;
@@ -299,6 +327,7 @@ void SurfaceFlinger::bootFinished()
     // stop boot animation
     // formerly we would just kill the process, but we now ask it to exit so it
     // can choose where to stop the animation.
+	 //property_set("ctl.stop", "bootanim");
     property_set("service.bootanim.exit", "1");
 }
 
@@ -715,8 +744,23 @@ status_t SurfaceFlinger::getDisplayInfo(const sp<IBinder>& display, DisplayInfo*
         info->orientation = 0;
     }
 
-    info->w = hwc.getWidth(type);
-    info->h = hwc.getHeight(type);
+    char valuep[PROPERTY_VALUE_MAX];
+    property_get("const.window.w", valuep, "0") ;    
+    windowWidth = atoi(valuep)>0? atoi(valuep): hwc.getWidth(type); 
+    property_get("const.window.h", valuep, "0") ;    
+    windowHeight = atoi(valuep)>0? atoi(valuep): hwc.getHeight(type);
+    if((windowWidth != (int)(hwc.getWidth(type))) || (windowHeight != (int)(hwc.getHeight(type)))){
+        windowSize = true;	
+    }else{
+        windowSize = false;
+    }
+    if(windowSize){
+        info->w = windowWidth;
+        info->h = windowHeight;
+    }else{
+        info->w = hwc.getWidth(type);
+        info->h = hwc.getHeight(type);
+    }
     info->xdpi = xdpi;
     info->ydpi = ydpi;
     info->fps = float(1e9 / hwc.getRefreshPeriod(type));
@@ -736,7 +780,12 @@ sp<IDisplayEventConnection> SurfaceFlinger::createDisplayEventConnection() {
 // ----------------------------------------------------------------------------
 
 void SurfaceFlinger::waitForEvent() {
-    mEventQueue.waitMessage();
+    mEventQueue.waitMessage(500);
+
+    if(request2XScaleChanged()){
+        signalRefresh();
+        return;
+    }        
 }
 
 void SurfaceFlinger::signalTransaction() {
@@ -874,8 +923,19 @@ void SurfaceFlinger::onMessageReceived(int32_t what) {
         handleMessageInvalidate();
         signalRefresh();
         break;
-    case MessageQueue::REFRESH:
+    case MessageQueue::REFRESH:        
         handleMessageRefresh();
+
+        if(need_unblank_fb0){
+            //ALOGI("unblankSignalRefresh work");
+            
+            sp<const DisplayDevice> hw(getDefaultDisplayDevice());
+            const Region screenBounds(hw->bounds());
+            
+            amsysfs_set_sysfs_str(FB0_BLANK_PATH,"0");
+            
+            need_unblank_fb0 = 0;
+        }
         break;
     }
 }
@@ -904,6 +964,28 @@ void SurfaceFlinger::handleMessageRefresh() {
 
 void SurfaceFlinger::doDebugFlashRegions()
 {
+    if(mDebugFps){
+        float fps = 0.0f;
+        float avgFps = 0.0f;
+
+        nsecs_t curTime = systemTime(SYSTEM_TIME_MONOTONIC);
+        if(0 == mDebugFpsStartTime){
+            mDebugFpsStartTime = curTime;
+        }
+        else{
+            avgFps = (float)mDebugFpsCount*1000*1000*1000/(curTime - mDebugFpsStartTime);
+        }
+
+        if(0 != mDebugFpsLastTime){
+            fps = (float)1*1000*1000*1000/(curTime - mDebugFpsLastTime);
+        }
+
+        mDebugFpsLastTime = curTime;
+        mDebugFpsCount++;
+
+        ALOGI("fps:%f, average fps:%f", fps, avgFps);
+    }
+    
     // is debugging enabled
     if (CC_LIKELY(!mDebugRegion))
         return;
@@ -1106,6 +1188,7 @@ void SurfaceFlinger::doComposition() {
     ATRACE_CALL();
     const bool repaintEverything = android_atomic_and(0, &mRepaintEverything);
     for (size_t dpy=0 ; dpy<mDisplays.size() ; dpy++) {
+   
         const sp<DisplayDevice>& hw(mDisplays[dpy]);
         if (hw->canDraw()) {
             // transform the dirty region into this screen's coordinate space
@@ -1113,13 +1196,14 @@ void SurfaceFlinger::doComposition() {
 
             // repaint the framebuffer (if needed)
             doDisplayComposition(hw, dirtyRegion);
-
             hw->dirtyRegion.clear();
             hw->flip(hw->swapRegion);
             hw->swapRegion.clear();
         }
         // inform the h/w that we're done compositing
         hw->compositionComplete();
+		//swap must be called after compositionComplete
+		hw->swapBuffers(getHwComposer());
     }
     postFramebuffer();
 }
@@ -1694,8 +1778,102 @@ void SurfaceFlinger::doDisplayComposition(const sp<const DisplayDevice>& hw,
     // update the swap region and clear the dirty region
     hw->swapRegion.orSelf(dirtyRegion);
 
-    // swap buffers (presentation)
-    hw->swapBuffers(getHwComposer());
+    // swap buffers cannot be called here
+  	//  hw->swapBuffers(getHwComposer());
+}
+#define PPMGR_SCALE_PATH "/sys/class/ppmgr/ppscaler"
+#define SCALE_PATH_0 "/sys/class/graphics/fb0/free_scale"
+#define SCALE_PATH_1 "/sys/class/graphics/fb1/free_scale"
+#define SCALE_AXIS_PATH  "/sys/class/graphics/fb0/scale_axis"
+#define SCALE_PATH       "/sys/class/graphics/fb0/scale"
+#define REQUEST_SCALE_PATH       "/sys/class/graphics/fb0/request2XScale"
+#define REQUEST_VIDEO_HOLE       "/sys/class/graphics/fb0/video_hole"
+#define OUTPUT_MODE_PATH     "/sys/class/display/mode"
+#define SYSCMD_BUFSIZE   32
+static int Last2XScaleValue=0;
+static int request_width=0;
+static int request_height=0;
+static int iptv = 0 ;
+static int request_type=0;
+static char lastcmdbuf[SYSCMD_BUFSIZE] = {0};
+
+void SurfaceFlinger::drawVideoHole(int x0, int y0, int w0 ,int h0)
+{
+    char property[PROPERTY_VALUE_MAX];
+    property_get("hw.videohole.x", property, "0") ;
+    int x=atoi(property)>0?atoi(property):x0; 
+    property_get("hw.videohole.y", property, "0") ;
+    int y=atoi(property)>0?atoi(property):y0; 
+    property_get("hw.videohole.width", property, "0"); 
+    int w=atoi(property)>0?atoi(property):w0; 
+    property_get("hw.videohole.height", property, "0"); 
+    int h=atoi(property)>0?atoi(property):h0; 
+    if(atoi(property) == 380){
+        amsysfs_set_sysfs_str(REQUEST_VIDEO_HOLE, "0 0 0 0 0") ;
+        amsysfs_set_sysfs_str("/sys/class/graphics/fb0/request2XScale", "2") ;
+    }
+
+    if(w<=0||h<=0)return;
+    Rect rect(x,y,x+w,y+h);
+    sp<const DisplayDevice> hw(getDefaultDisplayDevice());
+    const int32_t width = hw->getWidth();
+    const int32_t height = hw->getHeight();
+
+    /*	{
+        glEnable(GL_SCISSOR_TEST);
+        glClearColor(0,0,0,0);
+        const Rect& r = rect;
+        const GLint sy = height - (r.top + r.height());
+        glScissor(r.left, sy, r.width(), r.height());
+        glClear(GL_COLOR_BUFFER_BIT);
+        glScissor(0, 0, 2000, 2000);
+        glDisable(GL_SCISSOR_TEST);
+    }*/
+}
+
+int  amsysfs_get_sysfs_str(const char *path, char *valstr, int size)
+{
+    int fd;
+    int count = 0;
+    fd = open(path, O_RDONLY);
+    if (fd >= 0) {
+        count = read(fd, valstr, size - 1);
+        valstr[count] = '\0';
+        close(fd);
+    } else {
+        sprintf(valstr, "%s", "fail");
+        return -1;
+    };
+
+    return 0;
+}
+
+int amsysfs_set_sysfs_str(const char *path, const char *val)
+{
+    int fd;
+    int bytes;
+    fd = open(path, O_CREAT | O_RDWR | O_TRUNC, 0644);
+    if (fd >= 0) {
+        bytes = write(fd, val, strlen(val));
+        ALOGI("amsysfs_set_sysfs_str %s= %s\n", path,val);
+        close(fd);
+        return 0;
+    } else {
+    }
+    return -1;
+}
+
+static int request2XScaleChanged(void)
+{
+    int ret;
+    char buf[SYSCMD_BUFSIZE] = {0};
+
+    ret = amsysfs_get_sysfs_str(REQUEST_SCALE_PATH, buf, SYSCMD_BUFSIZE);
+    if (ret < 0 || memcmp(buf,lastcmdbuf,SYSCMD_BUFSIZE)==0) {
+        return 0;
+    }
+
+    return 1;
 }
 
 void SurfaceFlinger::doComposeSurfaces(const sp<const DisplayDevice>& hw, const Region& dirty)
@@ -2198,6 +2376,22 @@ void SurfaceFlinger::initializeDisplays() {
     postMessageAsync(msg);  // we may be called from main thread, use async message
 }
 
+void SurfaceFlinger::unblankSignalRefresh() {
+    class MessageUnblankSignalRefresh : public MessageBase {
+        SurfaceFlinger* flinger;
+    public:
+        MessageUnblankSignalRefresh(SurfaceFlinger* flinger) : flinger(flinger) { }
+        virtual bool handler() {
+            //ALOGI("unblankSignalRefresh handler");
+            need_unblank_fb0=1;
+            flinger->signalRefresh();
+            return true;
+        }
+    };
+    sp<MessageBase> msg = new MessageUnblankSignalRefresh(this);
+    postMessageAsync(msg, ms2ns(200));  // use async message
+    //ALOGI("unblankSignalRefresh postmsg");
+}
 
 void SurfaceFlinger::onScreenAcquired(const sp<const DisplayDevice>& hw) {
     ALOGD("Screen acquired, type=%d flinger=%p", hw->getDisplayType(), this);
@@ -2345,6 +2539,21 @@ status_t SurfaceFlinger::dump(int fd, const Vector<String16>& args)
                 index++;
                 clearStatsLocked(args, index, result);
                 dumpAll = false;
+            }
+
+            if ((index < numArgs) &&
+                    (args[index++] == String16("--fps"))) {
+                if((index < numArgs)){
+                    if(args[index] == String16("0")){
+                        mDebugFps = 0;
+                    }
+                    else{
+                        mDebugFps = 1;
+                        mDebugFpsStartTime = 0;
+                        mDebugFpsLastTime = 0;
+                        mDebugFpsCount = 0;
+                    }
+                }
             }
         }
 
@@ -2659,7 +2868,7 @@ status_t SurfaceFlinger::onTransact(
             break;
         }
     }
-
+    
     status_t err = BnSurfaceComposer::onTransact(code, data, reply, flags);
     if (err == UNKNOWN_TRANSACTION || err == PERMISSION_DENIED) {
         CHECK_INTERFACE(ISurfaceComposer, data, reply);
@@ -2751,6 +2960,208 @@ void SurfaceFlinger::repaintEverything() {
 }
 
 // ---------------------------------------------------------------------------
+status_t SurfaceFlinger::changeBufferTo3DFormat(float scale_x,float scale_y,int type)
+{
+    ALOGI("changeBufferTo3DFormat %f %f %i ",scale_x,scale_y,type);
+    /*
+    status_t result = PERMISSION_DENIED;
+
+    if (!GLExtensions::getInstance().haveFramebufferObject())
+        return INVALID_OPERATION;	
+
+    // get screen geometry
+    sp<const DisplayDevice> hw(getDefaultDisplayDevice());
+    const uint32_t hw_w = hw->getWidth();
+    const uint32_t hw_h = hw->getHeight();
+    //ALOGI("scale hw_w %i   hw_h %i  ori %d",hw_w,hw_h,mCurrentState.orientation);
+    const Region screenBounds(hw->bounds());
+
+    GLfloat u, v;
+    GLuint tname;
+
+    //result = renderScreenToTextureLocked2(0, &tname, &u, &v);
+    //if (result != NO_ERROR) {
+    //    return result;
+    //}
+
+    GLfloat vtx[8];
+    GLfloat vtx1[8];
+    if(type==1)
+    {
+        vtx[0]= 0;     vtx[1]=hw_h-hw_h*scale_y;
+        vtx[2]= 0;     vtx[3]=hw_h;
+        vtx[4]= hw_w*scale_x*0.5;  vtx[5]=hw_h;
+        vtx[6]= hw_w*scale_x*0.5;  vtx[7]=hw_h-hw_h*scale_y;
+
+        vtx1[0]= hw_w*scale_x*0.5-(hw_w-windowWidth)*scale_x/2;     vtx1[1]=vtx[1];
+        vtx1[2]= vtx1[0];     vtx1[3]=hw_h;
+        vtx1[4]= hw_w*scale_x-(hw_w-windowWidth)*scale_x/2;  vtx1[5]=hw_h;
+        vtx1[6]= vtx1[4];  vtx1[7]= vtx1[1];
+    }else if(type==2)
+    {
+        vtx[0]= 0;     vtx[1]=hw_h-hw_h*scale_y*0.5;
+        vtx[2]= 0;     vtx[3]=hw_h;
+        vtx[4]= hw_w*scale_x;  vtx[5]=hw_h;
+        vtx[6]= hw_w*scale_x;  vtx[7]=hw_h-hw_h*scale_y*0.5;
+
+        vtx1[0]= 0;     vtx1[1]=hw_h-hw_h*scale_y+(hw_h-windowHeight)*scale_y*0.5;
+        vtx1[2]= 0;     vtx1[3]=hw_h-hw_h*scale_y*0.5+(hw_h-windowHeight)*scale_y*0.5;
+        vtx1[4]= hw_w*scale_x;  vtx1[5]=vtx1[3];
+        vtx1[6]= hw_w*scale_x;  vtx1[7]=vtx1[1];
+    }
+
+    glEnable(GL_TEXTURE_2D);
+    const GLfloat texCoords[4][2] = { {0,v}, {0,0}, {u,0}, {u,v} };
+    glBindTexture(GL_TEXTURE_2D, tname);
+    glTexEnvx(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
+    glTexParameterx(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameterx(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexCoordPointer(2, GL_FLOAT, 0, texCoords);
+    glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+    glEnableClientState(GL_VERTEX_ARRAY);
+    glEnable(GL_SCISSOR_TEST);
+    glVertexPointer(2, GL_FLOAT, 0, vtx);
+    glDrawArrays( GL_TRIANGLE_FAN, 0, 4 );
+    glVertexPointer(2, GL_FLOAT, 0, vtx1);
+    glDrawArrays( GL_TRIANGLE_FAN, 0, 4 );
+
+    glDisable(GL_TEXTURE_2D);
+    glDisable(GL_BLEND);
+    glDeleteTextures(1, &tname);
+    */
+    return NO_ERROR;
+}
+
+status_t SurfaceFlinger::changeBufferTo3DFormat(int type)
+{
+/*
+    status_t result = PERMISSION_DENIED;
+
+    if (!GLExtensions::getInstance().haveFramebufferObject())
+        return INVALID_OPERATION;	
+
+    // get screen geometry
+    sp<const DisplayDevice> hw(getDefaultDisplayDevice());
+    const uint32_t hw_w = hw->getWidth();
+    const uint32_t hw_h = hw->getHeight();
+    const Region screenBounds(hw->bounds());
+
+    GLfloat u, v;
+    GLuint tname;
+    float scale_x=1.0;
+    float scale_y=1.0;
+
+    result = renderScreenToTextureLocked2(0, &tname, &u, &v);
+    if (result != NO_ERROR) {
+        return result;
+    }
+
+    GLfloat vtx0[8];
+    GLfloat vtx1[8];
+
+    if(type==1)
+    {
+        scale_y=1.0;
+        scale_x=0.5;
+
+        vtx0[0]= 0;     vtx0[1]=hw_h-hw_h*scale_y;
+        vtx0[2]= 0;     vtx0[3]=hw_h;
+        vtx0[4]= hw_w*scale_x;  vtx0[5]=hw_h;
+        vtx0[6]= hw_w*scale_x;  vtx0[7]=hw_h-hw_h*scale_y;
+
+        vtx1[0]= hw_w*scale_x;     vtx1[1]=hw_h-hw_h*scale_y;
+        vtx1[2]= hw_w*scale_x;     vtx1[3]=hw_h;
+        vtx1[4]= hw_w;  vtx1[5]=hw_h;
+        vtx1[6]= hw_w;  vtx1[7]=hw_h-hw_h*scale_y;
+    }else{
+        scale_y=0.5;
+        scale_x=1;
+
+        vtx0[0]= 0;     vtx0[1]=hw_h-hw_h*scale_y;
+        vtx0[2]= 0;     vtx0[3]=hw_h;
+        vtx0[4]= hw_w*scale_x;  vtx0[5]=hw_h;
+        vtx0[6]= hw_w*scale_x;  vtx0[7]=hw_h-hw_h*scale_y;
+
+
+        vtx1[0]= 0;     vtx1[1]=(float)hw_h-windowHeight;
+        vtx1[2]= 0;     vtx1[3]=hw_h-hw_h*scale_y+vtx1[1];
+        vtx1[4]= hw_w*scale_x;  vtx1[5]=vtx1[3];
+        vtx1[6]= hw_w*scale_x;  vtx1[7]=vtx1[1];
+    }
+
+    glEnable(GL_TEXTURE_2D);
+    const GLfloat texCoords[4][2] = { {0,v}, {0,0}, {u,0}, {u,v} };
+    glBindTexture(GL_TEXTURE_2D, tname);
+    glTexEnvx(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
+    glTexParameterx(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameterx(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexCoordPointer(2, GL_FLOAT, 0, texCoords);
+    glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+    glEnableClientState(GL_VERTEX_ARRAY);
+    glEnable(GL_SCISSOR_TEST);
+    glVertexPointer(2, GL_FLOAT, 0, vtx0);
+    glDrawArrays( GL_TRIANGLE_FAN, 0, 4 );
+
+    glVertexPointer(2, GL_FLOAT, 0, vtx1);
+    glDrawArrays( GL_TRIANGLE_FAN, 0, 4 );
+
+    glDisable(GL_TEXTURE_2D);
+    glDisable(GL_BLEND);
+    glDeleteTextures(1, &tname);
+    */
+    return NO_ERROR;
+}
+
+status_t SurfaceFlinger::preProcessWithFrameBuffer(const Region& dirty,float scale_x,float scale_y )
+{
+/*
+    status_t result = PERMISSION_DENIED;
+
+    if (!GLExtensions::getInstance().haveFramebufferObject())
+        return INVALID_OPERATION;	
+
+    // get screen geometry
+    sp<const DisplayDevice> hw(getDefaultDisplayDevice());
+    const uint32_t hw_w = hw->getWidth();
+    const uint32_t hw_h = hw->getHeight();
+    const Region screenBounds(hw->bounds());
+
+    GLfloat u, v;
+    GLuint tname;
+
+    //result = renderScreenToTextureLocked2(0, &tname, &u, &v);
+    //if (result != NO_ERROR) {   
+    //    return result;
+    //}
+
+    GLfloat vtx[8];
+    //the useful texture is keeped in left bottom corner.
+
+    vtx[0]= 0;     vtx[1]=hw_h-hw_h*scale_y;
+    vtx[2]= 0;     vtx[3]=hw_h;
+    vtx[4]= hw_w*scale_x;  vtx[5]=hw_h;
+    vtx[6]= hw_w*scale_x;  vtx[7]=hw_h-hw_h*scale_y;
+
+    glEnable(GL_TEXTURE_2D);
+    const GLfloat texCoords[4][2] = { {0,v}, {0,0}, {u,0}, {u,v} };
+    glBindTexture(GL_TEXTURE_2D, tname);
+    glTexEnvx(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
+    glTexParameterx(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameterx(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexCoordPointer(2, GL_FLOAT, 0, texCoords);
+    glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+    glEnableClientState(GL_VERTEX_ARRAY);
+    glEnable(GL_SCISSOR_TEST);
+    glVertexPointer(2, GL_FLOAT, 0, vtx);
+    glDrawArrays( GL_TRIANGLE_FAN, 0, 4 );
+
+    glDisable(GL_TEXTURE_2D);
+    glDisable(GL_BLEND);
+    glDeleteTextures(1, &tname);
+    */
+    return NO_ERROR;
+}
+
 // Capture screen into an IGraphiBufferProducer
 // ---------------------------------------------------------------------------
 
@@ -2962,6 +3373,177 @@ void SurfaceFlinger::renderScreenImplLocked(
     hw->setViewportAndProjection();
 }
 
+/*
+status_t SurfaceFlinger::renderScreenToTextureLocked(uint32_t layerStack,
+        GLuint* textureName, GLfloat* uOut, GLfloat* vOut)
+{
+	ALOGI("LayerScreenshot::renderScreenToTextureLocked");
+
+    ATRACE_CALL();
+
+    if (!GLExtensions::getInstance().haveFramebufferObject())
+        return INVALID_OPERATION;
+
+    // get screen geometry
+    // FIXME: figure out what it means to have a screenshot texture w/ multi-display
+    sp<const DisplayDevice> hw(getDefaultDisplayDevice());
+    const uint32_t hw_w = hw->getWidth();
+    const uint32_t hw_h = hw->getHeight();
+    GLfloat u = 1;
+    GLfloat v = 1;
+
+    // make sure to clear all GL error flags
+    while ( glGetError() != GL_NO_ERROR ) ;
+
+    // create a FBO
+    GLuint name, tname;
+    glGenTextures(1, &tname);
+    glBindTexture(GL_TEXTURE_2D, tname);
+    glTexParameterx(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameterx(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB,
+            hw_w, hw_h, 0, GL_RGB, GL_UNSIGNED_BYTE, 0);
+    
+    u = GLfloat(windowWidth) / hw_w;
+    v = GLfloat(windowHeight) / hw_h;
+    if (glGetError() != GL_NO_ERROR) {
+        while ( glGetError() != GL_NO_ERROR ) ;
+        GLint tw = (2 << (31 - clz(hw_w)));
+        GLint th = (2 << (31 - clz(hw_h)));
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB,
+                tw, th, 0, GL_RGB, GL_UNSIGNED_BYTE, 0);
+        u = GLfloat(windowWidth) / tw;
+        v = GLfloat(windowHeight) / th;
+    }
+    glGenFramebuffersOES(1, &name);
+    glBindFramebufferOES(GL_FRAMEBUFFER_OES, name);
+    glFramebufferTexture2DOES(GL_FRAMEBUFFER_OES,
+            GL_COLOR_ATTACHMENT0_OES, GL_TEXTURE_2D, tname, 0);
+
+    DisplayDevice::setViewportAndProjection(hw);
+
+    // redraw the screen entirely...
+    glDisable(GL_TEXTURE_EXTERNAL_OES);
+    glDisable(GL_TEXTURE_2D);
+    glClearColor(0,0,0,1);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
+	//doTranslateOffsetInRender(hw->getWidth()-windowWidth , hw->getHeight()-windowHeight,true);
+    const Vector< sp<Layer> >& layers(hw->getVisibleLayersSortedByZ());
+    const size_t count = layers.size();
+
+    for (size_t i=0 ; i<count ; ++i) {
+        const sp<Layer>& layer(layers[i]);
+        layer->draw(hw);
+    }
+
+	//doTranslateOffsetInRender(hw->getWidth()-windowWidth , hw->getHeight()-windowHeight,false);
+
+
+    hw->compositionComplete();
+
+    // back to main framebuffer
+    glBindFramebufferOES(GL_FRAMEBUFFER_OES, 0);
+    glDeleteFramebuffersOES(1, &name);
+	*textureName = tname;
+    *uOut = u;
+    *vOut = v;
+    return NO_ERROR;
+}
+
+status_t SurfaceFlinger::renderScreenToTextureLocked2(uint32_t layerStack,
+        GLuint* textureName, GLfloat* uOut, GLfloat* vOut)
+{
+
+    if (!GLExtensions::getInstance().haveFramebufferObject())
+        return INVALID_OPERATION;
+
+    // get screen geometry
+    sp<const DisplayDevice> hw(getDefaultDisplayDevice());
+    const uint32_t hw_w = hw->getWidth();
+    const uint32_t hw_h = hw->getHeight();
+    GLfloat u = 1;
+    GLfloat v = 1;
+
+    // make sure to clear all GL error flags
+    while ( glGetError() != GL_NO_ERROR ) ;
+
+    // create a FBO
+    GLuint name, tname;
+    glGenTextures(1, &tname);
+    glBindTexture(GL_TEXTURE_2D, tname);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA,
+            hw_w, hw_h, 0, GL_RGBA, GL_UNSIGNED_BYTE, 0);
+//	u = GLfloat(windowWidth) / hw_w;
+//  v = GLfloat(windowHeight) / hw_h;
+    if (glGetError() != GL_NO_ERROR) {
+        while ( glGetError() != GL_NO_ERROR ) ;
+        GLint tw = (2 << (31 - clz(hw_w)));
+        GLint th = (2 << (31 - clz(hw_h)));
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA,
+                tw, th, 0, GL_RGBA, GL_UNSIGNED_BYTE, 0);
+//       u = GLfloat(windowWidth) / tw;
+//       v = GLfloat(windowHeight) / th;
+        u = GLfloat(hw_w) / tw;
+        v = GLfloat(hw_h) / th;
+    }
+
+	
+    glGenFramebuffersOES(1, &name);
+    glBindFramebufferOES(GL_FRAMEBUFFER_OES, name);
+    glFramebufferTexture2DOES(GL_FRAMEBUFFER_OES,
+            GL_COLOR_ATTACHMENT0_OES, GL_TEXTURE_2D, tname, 0);
+
+    DisplayDevice::setViewportAndProjection(hw);
+
+    // redraw the screen entirely...
+    glDisable(GL_TEXTURE_EXTERNAL_OES);
+    glDisable(GL_TEXTURE_2D);
+    glDisable(GL_SCISSOR_TEST);
+    glClearColor(0,0,0,0);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glEnable(GL_SCISSOR_TEST);
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
+	
+    char property_tmp[32];
+    char videoholebuf[SYSCMD_BUFSIZE];
+    int holex=0,holey=0,holew=0,holeh=0,holelayer=0,logz=0;
+    amsysfs_get_sysfs_str(REQUEST_VIDEO_HOLE, videoholebuf, SYSCMD_BUFSIZE);
+    sscanf(videoholebuf, "%i %i %i %i %i %i %i", &holex,&holey,&holew,&holeh,&holelayer,&iptv,&logz);
+    
+    //doTranslateOffset(hw->getWidth()-windowWidth , hw->getHeight()-windowHeight,true);
+    const Vector< sp<Layer> >& layers(hw->getVisibleLayersSortedByZ());
+    const size_t count = layers.size();    
+    for (size_t i=0; i<count ; ++i) {
+        const sp<Layer>& layer(layers[i]);
+        if(layer->getName()=="FreezeSurface")
+        {// need to be improved when rotate ;
+            layer->draw(hw);
+        }
+        else
+            layer->draw(hw);
+    }
+
+    //doTranslateOffset(hw->getWidth()-windowWidth , hw->getHeight()-windowHeight,false);
+
+    hw->compositionComplete();
+    if(logz){
+        ALOGW("layercount =%d , %d , %d",count,holelayer,iptv);
+        logz=0;           
+    }
+    // back to main framebuffer
+    glBindFramebufferOES(GL_FRAMEBUFFER_OES, 0);
+    glDisable(GL_SCISSOR_TEST);
+    glDeleteFramebuffersOES(1, &name);
+
+    *textureName = tname;
+    *uOut = u;
+    *vOut = v;
+    return NO_ERROR;
+}
+*/
 
 status_t SurfaceFlinger::captureScreenImplLocked(
         const sp<const DisplayDevice>& hw,

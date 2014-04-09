@@ -107,6 +107,9 @@ typedef enum OMX_AUDIO_CODINGTYPE {
     OMX_AUDIO_CodingRA,          /**< Any variant of RA encoded data */
     OMX_AUDIO_CodingMIDI,        /**< Any variant of MIDI encoded data */
     OMX_AUDIO_CodingFLAC,        /**< Any variant of FLAC encoded data */
+#ifdef DOLBY_UDC
+    OMX_AUDIO_CodingDDP,         /**< Any variant of DDP encoded data */
+#endif // DOLBY_UDC
     OMX_AUDIO_CodingKhronosExtensions = 0x6F000000, /**< Reserved region for introducing Khronos Standard Extensions */ 
     OMX_AUDIO_CodingVendorStartUnused = 0x7F000000, /**< Reserved region for introducing Vendor Extensions */
     OMX_AUDIO_CodingMax = 0x7FFFFFFF
@@ -186,6 +189,7 @@ typedef struct OMX_AUDIO_PARAM_PCMMODETYPE {
     OMX_U32 nBitPerSample;            /**< Bit per sample */ 
     OMX_U32 nSamplingRate;            /**< Sampling rate of the source data.  Use 0 for 
                                            variable or unknown sampling rate. */ 
+	OMX_U32 nBlockAlign;
     OMX_AUDIO_PCMMODETYPE ePCMMode;   /**< PCM mode enumeration */ 
     OMX_AUDIO_CHANNELTYPE eChannelMapping[OMX_AUDIO_MAXCHANNELS]; /**< Slot i contains channel defined by eChannelMap[i] */
 
@@ -393,6 +397,61 @@ typedef struct OMX_AUDIO_PARAM_WMATYPE {
     OMX_U16 nEncodeOptions;   /**< WMA Type-specific data */
     OMX_U32 nSuperBlockAlign; /**< WMA Type-specific data */
 } OMX_AUDIO_PARAM_WMATYPE;
+/** asfparams */
+typedef struct OMX_AUDIO_PARAM_ASFTYPE {
+    OMX_U32 nSize;                 /**< Size of this structure, in Bytes */
+    OMX_VERSIONTYPE nVersion;      /**< OMX specification version information */
+    OMX_U32 nPortIndex;            /**< Port that this structure applies to */
+	//---------------------------
+    OMX_U16 wFormatTag;
+	OMX_U16 nChannels;
+	OMX_U32   nSamplesPerSec;
+	OMX_U32   nAvgBitratePerSec;
+	OMX_U16 nBlockAlign;
+	OMX_U16 wBitsPerSample;
+	OMX_U16 extradata_size;
+	OMX_U8  *extradata;
+	//--------------------------
+
+} OMX_AUDIO_PARAM_ASFTYPE;
+
+typedef struct OMX_AUDIO_PARAM_DTSHDTYPE {
+    OMX_U32 nSize;                 /**< Size of this structure, in Bytes */
+    OMX_VERSIONTYPE nVersion;      /**< OMX specification version information */
+    OMX_U32 nPortIndex;            /**< Port that this structure applies to */
+	//---------------------------
+	OMX_U16 nChannels;
+	OMX_U32 nSamplesPerSec;
+	OMX_U16 bitwidth;
+	//--------------------------
+} OMX_AUDIO_PARAM_DTSHDTYPE;
+
+typedef struct OMX_AUDIO_PARAM_APETYPE {
+	OMX_U32 nSize;                 /**< Size of this structure, in Bytes */
+	OMX_VERSIONTYPE nVersion;      /**< OMX specification version information */
+	OMX_U32 nPortIndex;            /**< Port that this structure applies to */
+	//---------------------------
+	OMX_U16 nChannels;
+	OMX_U32 nSamplesPerSec;
+	OMX_U16 wBitsPerSample;
+	OMX_U16 extradata_size;
+	OMX_U8  *extradata;
+	//--------------------------
+
+} OMX_AUDIO_PARAM_APETYPE;
+
+
+typedef struct OMX_AUDIO_PARAM_ALACTYPE {
+    OMX_U32 nSize;                 /**< Size of this structure, in Bytes */
+    OMX_VERSIONTYPE nVersion;      /**< OMX specification version information */
+    OMX_U32 nPortIndex;            /**< Port that this structure applies to */
+	//---------------------------
+	OMX_U16 nChannels;
+	OMX_U32 nSamplesPerSec;
+	OMX_U16 extradata_size;
+	OMX_U8 *extradata;
+	//--------------------------
+} OMX_AUDIO_PARAM_ALACTYPE;
 
 /** 
  * RealAudio format

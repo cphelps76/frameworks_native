@@ -72,13 +72,15 @@ Layer::Layer(SurfaceFlinger* flinger, const sp<Client>& client,
         mCurrentOpacity(true),
         mRefreshPending(false),
         mFrameLatencyNeeded(false),
+        isVideohole(false),
         mFiltering(false),
         mNeedsFiltering(false),
         mMesh(Mesh::TRIANGLE_FAN, 4, 2, 2),
         mSecure(false),
         mProtectedByApp(false),
         mHasSurface(false),
-        mClientRef(client)
+        mClientRef(client),
+        mIsBootAnimation(false)
 {
     mCurrentCrop.makeInvalid();
     mFlinger->getRenderEngine().genTextures(1, &mTextureName);
@@ -129,6 +131,10 @@ void Layer::onFirstRef() {
 
     const sp<const DisplayDevice> hw(mFlinger->getDefaultDisplayDevice());
     updateTransformHint(hw);
+    mIsBootAnimation =  (0 == strcmp(mName.string(),"BootAnimation"));
+    if(mIsBootAnimation){
+         mBootAnimTr = hw->getTransform();
+    }
 }
 
 Layer::~Layer() {
@@ -190,6 +196,7 @@ status_t Layer::setBuffers( uint32_t w, uint32_t h,
     mSecure = (flags & ISurfaceComposerClient::eSecure) ? true : false;
     mProtectedByApp = (flags & ISurfaceComposerClient::eProtectedByApp) ? true : false;
     mOpaqueLayer = (flags & ISurfaceComposerClient::eOpaque);
+	isVideohole = (flags & ISurfaceComposerClient::eVideoHole);
     mCurrentOpacity = getOpacityForFormat(format);
 
     mSurfaceFlingerConsumer->setDefaultBufferSize(w, h);
@@ -630,6 +637,11 @@ bool Layer::getOpacityForFormat(uint32_t format) {
     return true;
 }
 
+bool Layer::isVideoHole() const
+{	
+    return isVideohole;
+} 
+
 // ----------------------------------------------------------------------------
 // local state
 // ----------------------------------------------------------------------------
@@ -637,7 +649,9 @@ bool Layer::getOpacityForFormat(uint32_t format) {
 void Layer::computeGeometry(const sp<const DisplayDevice>& hw, Mesh& mesh) const
 {
     const Layer::State& s(getDrawingState());
-    const Transform tr(hw->getTransform() * s.transform);
+    //const Transform tr(hw->getTransform() * s.transform);
+    //Don`t transform for BootAnimation
+    const Transform tr( !mIsBootAnimation ? (hw->getTransform()*s.transform) : (s.transform*mBootAnimTr));
     const uint32_t hw_h = hw->getHeight();
     Rect win(s.active.w, s.active.h);
     if (!s.active.crop.isEmpty()) {
@@ -658,15 +672,23 @@ void Layer::computeGeometry(const sp<const DisplayDevice>& hw, Mesh& mesh) const
 
 bool Layer::isOpaque() const
 {
+    //const Layer::State& front(drawingState());
+
     // if we don't have a buffer yet, we're translucent regardless of the
     // layer's opaque flag.
     if (mActiveBuffer == 0) {
         return false;
     }
 
+    //TODO not needed because of mOpaqueLayer?
+    /*
+    if (front.flags & ISurfaceComposer::eLayerOpaque) {
+        return true;
+    }*/
+
     // if the layer has the opaque flag, then we're always opaque,
     // otherwise we use the current buffer's format.
-    return mOpaqueLayer || mCurrentOpacity;
+    return mOpaqueLayer && mCurrentOpacity;
 }
 
 bool Layer::isProtected() const

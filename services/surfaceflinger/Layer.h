@@ -174,6 +174,8 @@ public:
      */
     virtual bool isFixedSize() const;
 
+    virtual bool isVideoHole() const;
+
 protected:
     /*
      * onDraw - draws the surface.
@@ -354,6 +356,7 @@ private:
     bool mCurrentOpacity;
     bool mRefreshPending;
     bool mFrameLatencyNeeded;
+    bool isVideohole;
     // Whether filtering is forced on or not
     bool mFiltering;
     // Whether filtering is needed b/c of the drawingstate
@@ -372,6 +375,9 @@ private:
     // Set to true once we've returned this surface's handle
     mutable bool mHasSurface;
     const wp<Client> mClientRef;
+
+    bool mIsBootAnimation;
+    Transform mBootAnimTr;
 };
 
 // ---------------------------------------------------------------------------
