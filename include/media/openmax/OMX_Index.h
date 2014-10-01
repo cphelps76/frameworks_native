@@ -263,6 +263,8 @@ typedef enum OMX_INDEXTYPE {
     OMX_IndexKhronosExtensions = 0x6F000000, /**< Reserved region for introducing Khronos Standard Extensions */ 
     /* Vendor specific area */
     OMX_IndexVendorStartUnused = 0x7F000000,
+    OMX_IndexSoftOMXEnableBuffer,      /** used for h265 native render */
+    OMX_IndexSoftOMXUseBuffer,
     /* Vendor specific structures should be in the range of 0x7F000000 
        to 0x7FFFFFFE.  This range is not broken out by vendor, so
        private indexes are not guaranteed unique and therefore should
